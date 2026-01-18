@@ -6,7 +6,7 @@
 //!
 //! # Platform Support
 //!
-//! - **Linux** (primary): Via i915 PMU and `perf_event_open` syscall
+//! - **Linux** (primary): Via i915/xe PMU and `perf_event_open` syscall
 //! - **Windows** (planned): Via D3DKMT API
 //!
 //! # Features
@@ -14,6 +14,11 @@
 //! - Engine utilization (Render, Video, VideoEnhance, Blitter, Compute)
 //! - GPU frequency (actual and requested)
 //! - RC6 power-saving state residency
+//! - Temperature and fan speed monitoring (via hwmon)
+//! - Power consumption monitoring (via RAPL)
+//! - Throttle detection (thermal, power limit, etc.)
+//! - Per-process GPU usage tracking (via DRM fdinfo)
+//! - Multi-driver support (i915 and xe)
 //! - Continuous sampling with callbacks
 //!
 //! # Quick Start
@@ -31,6 +36,10 @@
 //! println!("Video: {:.1}%", stats.engines.video.busy_percent);
 //! println!("VideoEnhance: {:.1}%", stats.engines.video_enhance.busy_percent);
 //! println!("Frequency: {} MHz", stats.frequency.actual_mhz);
+//!
+//! if let Some(temp) = &stats.temperature {
+//!     println!("Temperature: {:.0}°C", temp.gpu_celsius);
+//! }
 //! # Ok::<(), intel_gpu_stats::Error>(())
 //! ```
 //!
@@ -60,6 +69,21 @@
 //! // Stop sampling
 //! handle.stop();
 //! # Ok::<(), intel_gpu_stats::Error>(())
+//! ```
+//!
+//! # Per-Process GPU Tracking
+//!
+//! ```rust,no_run
+//! use intel_gpu_stats::IntelGpu;
+//!
+//! // List all processes using the GPU
+//! let clients = IntelGpu::list_drm_clients();
+//! for client in &clients {
+//!     println!("{} (PID {}): {} ns", client.name, client.pid, client.total_usage_ns());
+//! }
+//!
+//! // Find Quick Sync users specifically
+//! let quicksync_users = IntelGpu::find_quicksync_clients();
 //! ```
 
 #![warn(missing_docs)]
