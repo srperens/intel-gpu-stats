@@ -1,6 +1,32 @@
 //! Data types for Intel GPU statistics
 
+use std::fmt;
 use std::time::Instant;
+
+/// Intel GPU kernel driver type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GpuDriver {
+    /// Legacy i915 driver (most Intel GPUs before ~2024)
+    I915,
+    /// New xe driver (Intel Arc, newer integrated GPUs)
+    Xe,
+}
+
+impl GpuDriver {
+    /// Get the driver name as a string
+    pub fn name(&self) -> &'static str {
+        match self {
+            GpuDriver::I915 => "i915",
+            GpuDriver::Xe => "xe",
+        }
+    }
+}
+
+impl fmt::Display for GpuDriver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
 
 /// Information about a detected Intel GPU
 #[derive(Debug, Clone)]
@@ -19,6 +45,8 @@ pub struct GpuInfo {
     pub render_node: Option<String>,
     /// DRM card node path (e.g., /dev/dri/card0)
     pub card_node: Option<String>,
+    /// Kernel driver in use
+    pub driver: Option<GpuDriver>,
 }
 
 impl GpuInfo {
@@ -43,6 +71,8 @@ pub struct GpuStats {
     pub power: Option<PowerStats>,
     /// RC6 power-saving state residency
     pub rc6: Option<Rc6Stats>,
+    /// Temperature information (if available via hwmon)
+    pub temperature: Option<TemperatureStats>,
 }
 
 impl GpuStats {
@@ -55,6 +85,7 @@ impl GpuStats {
             frequency: FrequencyStats::default(),
             power: None,
             rc6: None,
+            temperature: None,
         }
     }
 }
@@ -257,5 +288,29 @@ impl SampleType {
             2 => Some(SampleType::Sema),
             _ => None,
         }
+    }
+}
+
+/// GPU temperature statistics from hwmon
+#[derive(Debug, Clone)]
+pub struct TemperatureStats {
+    /// GPU temperature in degrees Celsius
+    pub gpu_celsius: f64,
+}
+
+impl TemperatureStats {
+    /// Create a new TemperatureStats
+    pub fn new(gpu_celsius: f64) -> Self {
+        Self { gpu_celsius }
+    }
+
+    /// Check if temperature is critical (>90C)
+    pub fn is_critical(&self) -> bool {
+        self.gpu_celsius > 90.0
+    }
+
+    /// Check if temperature is high (>80C)
+    pub fn is_high(&self) -> bool {
+        self.gpu_celsius > 80.0
     }
 }

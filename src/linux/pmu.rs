@@ -1,14 +1,14 @@
-//! i915 PMU (Performance Monitoring Unit) discovery and configuration
+//! Intel GPU PMU (Performance Monitoring Unit) discovery and configuration
 //!
-//! The i915 driver exposes GPU performance counters via the Linux perf subsystem.
-//! This module handles discovering the PMU and its available events.
+//! Both i915 and xe drivers expose GPU performance counters via the Linux perf subsystem.
+//! This module handles discovering the PMU and its available events for both drivers.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::types::{EngineClass, GpuInfo};
+use crate::types::{EngineClass, GpuDriver, GpuInfo};
 
 /// Base path for PMU event sources
 const PMU_BASE_PATH: &str = "/sys/bus/event_source/devices";
@@ -16,7 +16,7 @@ const PMU_BASE_PATH: &str = "/sys/bus/event_source/devices";
 /// Intel vendor ID
 pub const INTEL_VENDOR_ID: u16 = 0x8086;
 
-/// i915 PMU information
+/// Intel GPU PMU information
 #[derive(Debug, Clone)]
 pub struct PmuInfo {
     /// PMU type ID for perf_event_open
@@ -27,6 +27,8 @@ pub struct PmuInfo {
     pub events: HashMap<String, u64>,
     /// Card ID this PMU belongs to (e.g., "card0")
     pub card_id: String,
+    /// Driver type (i915 or xe)
+    pub driver: GpuDriver,
 }
 
 impl PmuInfo {
@@ -48,11 +50,10 @@ impl PmuInfo {
     }
 }
 
-/// Discover i915 PMU devices
+/// Discover Intel GPU PMU devices (both i915 and xe)
 pub fn discover_pmu() -> Result<Vec<PmuInfo>> {
     let mut pmus = Vec::new();
 
-    // Look for i915 PMU - could be named "i915" or "i915-0000:00:02.0" etc.
     let pmu_base = Path::new(PMU_BASE_PATH);
     if !pmu_base.exists() {
         return Err(Error::PmuNotAvailable);
@@ -68,8 +69,16 @@ pub fn discover_pmu() -> Result<Vec<PmuInfo>> {
 
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
+
+        // Check for i915 PMU: "i915" or "i915-0000:00:02.0"
         if name.starts_with("i915") {
-            if let Ok(pmu) = read_pmu_info(&entry.path(), &name) {
+            if let Ok(pmu) = read_pmu_info(&entry.path(), &name, GpuDriver::I915) {
+                pmus.push(pmu);
+            }
+        }
+        // Check for xe PMU: "xe_0000_00_02.0" format
+        else if name.starts_with("xe_") {
+            if let Ok(pmu) = read_pmu_info(&entry.path(), &name, GpuDriver::Xe) {
                 pmus.push(pmu);
             }
         }
@@ -83,7 +92,7 @@ pub fn discover_pmu() -> Result<Vec<PmuInfo>> {
 }
 
 /// Read PMU information from sysfs
-fn read_pmu_info(path: &Path, name: &str) -> Result<PmuInfo> {
+fn read_pmu_info(path: &Path, name: &str, driver: GpuDriver) -> Result<PmuInfo> {
     // Read PMU type ID
     let type_path = path.join("type");
     let type_str = fs::read_to_string(&type_path)
@@ -94,7 +103,7 @@ fn read_pmu_info(path: &Path, name: &str) -> Result<PmuInfo> {
         .map_err(|e| Error::sysfs_parse(&type_path, format!("invalid type id: {}", e)))?;
 
     // Parse card ID from PMU name
-    let card_id = parse_card_id(name);
+    let card_id = parse_card_id(name, driver);
 
     // Read available events
     let events = read_pmu_events(path)?;
@@ -104,24 +113,38 @@ fn read_pmu_info(path: &Path, name: &str) -> Result<PmuInfo> {
         path: path.to_path_buf(),
         events,
         card_id,
+        driver,
     })
 }
 
 /// Parse card ID from PMU name
 ///
 /// PMU names can be:
-/// - "i915" (single GPU)
-/// - "i915-0000:00:02.0" (multi-GPU with PCI address)
-fn parse_card_id(name: &str) -> String {
-    if name == "i915" {
-        return "card0".to_string();
-    }
-
-    // Try to find the card by PCI address
-    if let Some(pci_addr) = name.strip_prefix("i915-") {
-        // Look up the card ID from the PCI address
-        if let Ok(card) = find_card_by_pci(pci_addr) {
-            return card;
+/// - "i915" (single GPU, i915 driver)
+/// - "i915-0000:00:02.0" (multi-GPU with PCI address, i915 driver)
+/// - "xe_0000_00_02.0" (xe driver, uses underscores in PCI address)
+fn parse_card_id(name: &str, driver: GpuDriver) -> String {
+    match driver {
+        GpuDriver::I915 => {
+            if name == "i915" {
+                return "card0".to_string();
+            }
+            // Try to find the card by PCI address: "i915-0000:00:02.0"
+            if let Some(pci_addr) = name.strip_prefix("i915-") {
+                if let Ok(card) = find_card_by_pci(pci_addr) {
+                    return card;
+                }
+            }
+        }
+        GpuDriver::Xe => {
+            // xe PMU names are like "xe_0000_00_02.0" (underscores instead of colons)
+            if let Some(pci_part) = name.strip_prefix("xe_") {
+                // Convert underscores to colons: "0000_00_02.0" -> "0000:00:02.0"
+                let pci_addr = pci_part.replacen('_', ":", 2);
+                if let Ok(card) = find_card_by_pci(&pci_addr) {
+                    return card;
+                }
+            }
         }
     }
 
@@ -280,6 +303,9 @@ fn read_gpu_info(card_path: &Path, card_id: &str) -> Result<GpuInfo> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
+    // Detect driver in use
+    let driver = detect_gpu_driver(&device_path);
+
     // Find render node
     let render_node = find_render_node(card_id);
 
@@ -303,7 +329,27 @@ fn read_gpu_info(card_path: &Path, card_id: &str) -> Result<GpuInfo> {
         device_id,
         render_node,
         card_node,
+        driver,
     })
+}
+
+/// Detect which kernel driver is in use for a GPU
+fn detect_gpu_driver(device_path: &Path) -> Option<GpuDriver> {
+    // The driver symlink points to the kernel driver module
+    let driver_link = device_path.join("driver");
+    if let Ok(target) = fs::read_link(&driver_link) {
+        let driver_name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        return match driver_name.as_str() {
+            "i915" => Some(GpuDriver::I915),
+            "xe" => Some(GpuDriver::Xe),
+            _ => None,
+        };
+    }
+    None
 }
 
 /// Find the render node for a card
@@ -357,60 +403,72 @@ fn get_device_name(device_id: u16) -> Option<String> {
 pub fn get_engine_instances(pmu: &PmuInfo) -> HashMap<EngineClass, Vec<u16>> {
     let mut engines: HashMap<EngineClass, Vec<u16>> = HashMap::new();
 
-    // Check which engine events are available by looking at sysfs
-    // The events directory contains entries like:
-    // - render-busy
-    // - video-busy, vcs0-busy, vcs1-busy
-    // - video_enhance-busy, vecs0-busy
-    // - blitter-busy, bcs0-busy
-    // - compute-busy, ccs0-busy, ccs1-busy (on Arc)
-
     for event_name in pmu.events.keys() {
-        if !event_name.ends_with("-busy") {
-            continue;
-        }
-
-        let prefix = event_name.strip_suffix("-busy").unwrap();
-
-        // Check for engine class names
-        match prefix {
-            "render" | "rcs0" => {
-                engines.entry(EngineClass::Render).or_default().push(0);
-            }
-            "blitter" | "bcs0" => {
-                engines.entry(EngineClass::Copy).or_default().push(0);
-            }
-            "video" | "vcs0" => {
-                engines.entry(EngineClass::Video).or_default().push(0);
-            }
-            "vcs1" => {
-                engines.entry(EngineClass::Video).or_default().push(1);
-            }
-            "video_enhance" | "vecs0" => {
-                engines
-                    .entry(EngineClass::VideoEnhance)
-                    .or_default()
-                    .push(0);
-            }
-            "vecs1" => {
-                engines
-                    .entry(EngineClass::VideoEnhance)
-                    .or_default()
-                    .push(1);
-            }
-            "compute" | "ccs0" => {
-                engines.entry(EngineClass::Compute).or_default().push(0);
-            }
-            _ if prefix.starts_with("ccs") => {
-                // Handle ccs1, ccs2, etc.
-                if let Ok(instance) = prefix[3..].parse::<u16>() {
-                    engines
-                        .entry(EngineClass::Compute)
-                        .or_default()
-                        .push(instance);
+        match pmu.driver {
+            GpuDriver::I915 => {
+                // i915 events: render-busy, video-busy, vcs0-busy, etc.
+                if !event_name.ends_with("-busy") {
+                    continue;
+                }
+                let prefix = event_name.strip_suffix("-busy").unwrap();
+                match prefix {
+                    "render" | "rcs0" => {
+                        engines.entry(EngineClass::Render).or_default().push(0);
+                    }
+                    "blitter" | "bcs0" => {
+                        engines.entry(EngineClass::Copy).or_default().push(0);
+                    }
+                    "video" | "vcs0" => {
+                        engines.entry(EngineClass::Video).or_default().push(0);
+                    }
+                    "vcs1" => {
+                        engines.entry(EngineClass::Video).or_default().push(1);
+                    }
+                    "video_enhance" | "vecs0" => {
+                        engines
+                            .entry(EngineClass::VideoEnhance)
+                            .or_default()
+                            .push(0);
+                    }
+                    "vecs1" => {
+                        engines
+                            .entry(EngineClass::VideoEnhance)
+                            .or_default()
+                            .push(1);
+                    }
+                    "compute" | "ccs0" => {
+                        engines.entry(EngineClass::Compute).or_default().push(0);
+                    }
+                    _ if prefix.starts_with("ccs") => {
+                        if let Ok(instance) = prefix[3..].parse::<u16>() {
+                            engines
+                                .entry(EngineClass::Compute)
+                                .or_default()
+                                .push(instance);
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
+            GpuDriver::Xe => {
+                // xe events: render-group-busy-gt0, copy-group-busy-gt0, media-group-busy-gt0, etc.
+                if event_name.contains("-group-busy") {
+                    if event_name.starts_with("render-group-busy") {
+                        engines.entry(EngineClass::Render).or_default().push(0);
+                    } else if event_name.starts_with("copy-group-busy") {
+                        engines.entry(EngineClass::Copy).or_default().push(0);
+                    } else if event_name.starts_with("media-group-busy") {
+                        // xe uses "media" instead of "video"
+                        engines.entry(EngineClass::Video).or_default().push(0);
+                        engines
+                            .entry(EngineClass::VideoEnhance)
+                            .or_default()
+                            .push(0);
+                    } else if event_name.starts_with("compute-group-busy") {
+                        engines.entry(EngineClass::Compute).or_default().push(0);
+                    }
+                }
+            }
         }
     }
 

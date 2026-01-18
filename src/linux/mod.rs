@@ -1,8 +1,9 @@
-//! Linux-specific implementation using i915 PMU via perf_event_open
+//! Linux-specific implementation using i915/xe PMU via perf_event_open
 //!
 //! This module provides access to Intel GPU statistics on Linux systems
-//! through the i915 driver's PMU (Performance Monitoring Unit) interface.
+//! through the i915 or xe driver's PMU (Performance Monitoring Unit) interface.
 
+pub mod hwmon;
 pub mod perf;
 pub mod pmu;
 
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant};
 use crate::error::{Error, Result};
 use crate::types::*;
 
+use hwmon::HwmonReader;
 use perf::{open_i915_event, PerfEvent};
 use pmu::{discover_gpus, discover_pmu, get_engine_instances, PmuInfo};
 
@@ -129,7 +131,7 @@ impl EngineCounters {
 /// Intel GPU statistics reader
 ///
 /// This struct provides access to Intel GPU statistics on Linux through
-/// the i915 PMU interface.
+/// the i915 or xe driver's PMU interface.
 pub struct IntelGpu {
     /// PMU information
     pmu: PmuInfo,
@@ -153,6 +155,8 @@ pub struct IntelGpu {
     last_timestamp: Instant,
     /// Whether compute engine is available
     has_compute: bool,
+    /// Hwmon reader for temperature
+    hwmon: HwmonReader,
 }
 
 impl IntelGpu {
@@ -204,6 +208,9 @@ impl IntelGpu {
         let available_engines = get_engine_instances(&pmu);
         let has_compute = available_engines.contains_key(&EngineClass::Compute);
 
+        // Initialize hwmon reader for temperature
+        let hwmon = HwmonReader::new(&gpu_info.pci_path);
+
         let mut gpu = Self {
             pmu,
             gpu_info,
@@ -216,6 +223,7 @@ impl IntelGpu {
             last_rc6: 0,
             last_timestamp: Instant::now(),
             has_compute,
+            hwmon,
         };
 
         // Open engine events
@@ -370,6 +378,9 @@ impl IntelGpu {
         // Read RC6
         stats.rc6 = self.read_rc6(elapsed_ns)?;
 
+        // Read temperature
+        stats.temperature = self.hwmon.read();
+
         self.last_timestamp = now;
 
         Ok(stats)
@@ -466,6 +477,16 @@ impl IntelGpu {
     /// Check if compute engine is available (Intel Arc GPUs)
     pub fn has_compute_engine(&self) -> bool {
         self.has_compute
+    }
+
+    /// Get the driver type in use
+    pub fn driver(&self) -> GpuDriver {
+        self.pmu.driver
+    }
+
+    /// Check if temperature monitoring is available
+    pub fn has_temperature(&self) -> bool {
+        self.hwmon.is_available()
     }
 }
 

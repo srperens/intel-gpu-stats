@@ -32,6 +32,10 @@ fn main() -> Result<()> {
 
                 println!("  PCI Path:    {}", gpu.pci_path);
 
+                if let Some(driver) = gpu.driver {
+                    println!("  Driver:      {}", driver);
+                }
+
                 if let Some(ref node) = gpu.card_node {
                     println!("  Card Node:   {}", node);
                 }

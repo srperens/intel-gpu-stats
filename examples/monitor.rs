@@ -41,8 +41,12 @@ fn main() -> Result<()> {
         info.device_name.as_deref().unwrap_or("Unknown")
     );
     println!("Device ID: 0x{:04x}", info.device_id);
+    println!("Driver: {}", gpu.driver());
     if let Some(ref node) = info.render_node {
         println!("Render node: {}", node);
+    }
+    if gpu.has_temperature() {
+        println!("Temperature: available");
     }
     println!();
 
@@ -79,6 +83,10 @@ fn main() -> Result<()> {
 
         if let Some(ref rc6) = stats.rc6 {
             print!(" | RC6: {:5.1}%", rc6.residency_percent);
+        }
+
+        if let Some(ref temp) = stats.temperature {
+            print!(" | Temp: {:.0}C", temp.gpu_celsius);
         }
 
         io::stdout().flush().unwrap();
