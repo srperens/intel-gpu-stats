@@ -73,6 +73,8 @@ pub struct GpuStats {
     pub rc6: Option<Rc6Stats>,
     /// Temperature information (if available via hwmon)
     pub temperature: Option<TemperatureStats>,
+    /// Throttle information (if available)
+    pub throttle: Option<ThrottleInfo>,
 }
 
 impl GpuStats {
@@ -86,6 +88,7 @@ impl GpuStats {
             power: None,
             rc6: None,
             temperature: None,
+            throttle: None,
         }
     }
 }
@@ -296,12 +299,25 @@ impl SampleType {
 pub struct TemperatureStats {
     /// GPU temperature in degrees Celsius
     pub gpu_celsius: f64,
+    /// Fan speed in RPM (if available, typically for discrete GPUs)
+    pub fan_rpm: Option<u32>,
 }
 
 impl TemperatureStats {
     /// Create a new TemperatureStats
     pub fn new(gpu_celsius: f64) -> Self {
-        Self { gpu_celsius }
+        Self {
+            gpu_celsius,
+            fan_rpm: None,
+        }
+    }
+
+    /// Create a new TemperatureStats with fan speed
+    pub fn with_fan(gpu_celsius: f64, fan_rpm: u32) -> Self {
+        Self {
+            gpu_celsius,
+            fan_rpm: Some(fan_rpm),
+        }
     }
 
     /// Check if temperature is critical (>90C)
@@ -312,5 +328,92 @@ impl TemperatureStats {
     /// Check if temperature is high (>80C)
     pub fn is_high(&self) -> bool {
         self.gpu_celsius > 80.0
+    }
+}
+
+/// GPU throttling information
+#[derive(Debug, Clone, Default)]
+pub struct ThrottleInfo {
+    /// Whether the GPU is currently throttled
+    pub is_throttled: bool,
+    /// Throttled due to status/general reasons
+    pub status: bool,
+    /// Throttled due to power limit (PL1)
+    pub power_limit: bool,
+    /// Throttled due to thermal limit
+    pub thermal: bool,
+    /// Throttled due to PROCHOT signal
+    pub prochot: bool,
+    /// Throttled due to RATL (Running Average Thermal Limit)
+    pub ratl: bool,
+    /// Throttled due to VR thermal limit
+    pub vr_thermal: bool,
+    /// Throttled due to VR TDC (Thermal Design Current)
+    pub vr_tdc: bool,
+}
+
+impl ThrottleInfo {
+    /// Create a new ThrottleInfo with no throttling
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if any throttling reason is active
+    pub fn any_throttling(&self) -> bool {
+        self.is_throttled
+            || self.status
+            || self.power_limit
+            || self.thermal
+            || self.prochot
+            || self.ratl
+            || self.vr_thermal
+            || self.vr_tdc
+    }
+}
+
+/// Per-process (DRM client) GPU usage information
+#[derive(Debug, Clone)]
+pub struct DrmClient {
+    /// Process ID
+    pub pid: u32,
+    /// Process name/command
+    pub name: String,
+    /// Render/3D engine usage in nanoseconds
+    pub render_ns: u64,
+    /// Copy/Blitter engine usage in nanoseconds
+    pub copy_ns: u64,
+    /// Video engine usage in nanoseconds
+    pub video_ns: u64,
+    /// Video enhance engine usage in nanoseconds
+    pub video_enhance_ns: u64,
+    /// Compute engine usage in nanoseconds
+    pub compute_ns: u64,
+    /// Total GPU memory used in bytes
+    pub memory_bytes: u64,
+}
+
+impl DrmClient {
+    /// Create a new DrmClient
+    pub fn new(pid: u32, name: String) -> Self {
+        Self {
+            pid,
+            name,
+            render_ns: 0,
+            copy_ns: 0,
+            video_ns: 0,
+            video_enhance_ns: 0,
+            compute_ns: 0,
+            memory_bytes: 0,
+        }
+    }
+
+    /// Total engine usage across all engines
+    pub fn total_usage_ns(&self) -> u64 {
+        self.render_ns + self.copy_ns + self.video_ns + self.video_enhance_ns + self.compute_ns
+    }
+
+    /// Check if this client is using Quick Sync (video or video_enhance)
+    pub fn is_using_quicksync(&self) -> bool {
+        self.video_ns > 0 || self.video_enhance_ns > 0
     }
 }

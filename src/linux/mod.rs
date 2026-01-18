@@ -3,9 +3,12 @@
 //! This module provides access to Intel GPU statistics on Linux systems
 //! through the i915 or xe driver's PMU (Performance Monitoring Unit) interface.
 
+pub mod fdinfo;
 pub mod hwmon;
 pub mod perf;
 pub mod pmu;
+pub mod rapl;
+pub mod throttle;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +22,8 @@ use crate::types::*;
 use hwmon::HwmonReader;
 use perf::{open_i915_event, PerfEvent};
 use pmu::{discover_gpus, discover_pmu, get_engine_instances, PmuInfo};
+use rapl::RaplReader;
+use throttle::ThrottleReader;
 
 /// Handle for controlling background sampling
 pub struct SamplingHandle {
@@ -155,8 +160,12 @@ pub struct IntelGpu {
     last_timestamp: Instant,
     /// Whether compute engine is available
     has_compute: bool,
-    /// Hwmon reader for temperature
+    /// Hwmon reader for temperature and fan speed
     hwmon: HwmonReader,
+    /// Throttle reader
+    throttle_reader: ThrottleReader,
+    /// RAPL power reader
+    rapl_reader: RaplReader,
 }
 
 impl IntelGpu {
@@ -208,8 +217,14 @@ impl IntelGpu {
         let available_engines = get_engine_instances(&pmu);
         let has_compute = available_engines.contains_key(&EngineClass::Compute);
 
-        // Initialize hwmon reader for temperature
+        // Initialize hwmon reader for temperature and fan speed
         let hwmon = HwmonReader::new(&gpu_info.pci_path);
+
+        // Initialize throttle reader
+        let throttle_reader = ThrottleReader::new(&gpu_info.id);
+
+        // Initialize RAPL power reader
+        let rapl_reader = RaplReader::new(&gpu_info.pci_path);
 
         let mut gpu = Self {
             pmu,
@@ -224,6 +239,8 @@ impl IntelGpu {
             last_timestamp: Instant::now(),
             has_compute,
             hwmon,
+            throttle_reader,
+            rapl_reader,
         };
 
         // Open engine events
@@ -378,8 +395,14 @@ impl IntelGpu {
         // Read RC6
         stats.rc6 = self.read_rc6(elapsed_ns)?;
 
-        // Read temperature
+        // Read temperature (and fan speed if available)
         stats.temperature = self.hwmon.read();
+
+        // Read throttle information
+        stats.throttle = self.throttle_reader.read();
+
+        // Read power consumption
+        stats.power = self.rapl_reader.read();
 
         self.last_timestamp = now;
 
@@ -487,6 +510,37 @@ impl IntelGpu {
     /// Check if temperature monitoring is available
     pub fn has_temperature(&self) -> bool {
         self.hwmon.is_available()
+    }
+
+    /// Check if fan speed monitoring is available
+    pub fn has_fan(&self) -> bool {
+        self.hwmon.has_fan()
+    }
+
+    /// Check if throttle monitoring is available
+    pub fn has_throttle(&self) -> bool {
+        self.throttle_reader.is_available()
+    }
+
+    /// Check if power monitoring is available
+    pub fn has_power(&self) -> bool {
+        self.rapl_reader.is_available()
+    }
+
+    /// List all processes using the GPU (DRM clients)
+    ///
+    /// Returns a list of processes that have open file descriptors
+    /// to the GPU's DRM render node, along with their GPU usage.
+    pub fn list_drm_clients() -> Vec<DrmClient> {
+        fdinfo::list_drm_clients()
+    }
+
+    /// Find processes using Quick Sync (video encode/decode)
+    ///
+    /// Returns only processes that are actively using the video
+    /// or video_enhance engines.
+    pub fn find_quicksync_clients() -> Vec<DrmClient> {
+        fdinfo::find_quicksync_clients()
     }
 }
 
