@@ -2,11 +2,15 @@
 name = "intel-gpu-stats"
 version = "0.1.0"
 edition = "2021"
+authors = ["Simon Perens <simon@eyevinn.se>"]
 license = "Apache-2.0"
-description = "Cross-platform Intel GPU statistics monitoring"
-repository = "https://github.com/AUR/intel-gpu-stats"
-keywords = ["intel", "gpu", "monitoring", "quicksync", "vaapi"]
-categories = ["hardware-support", "os"]
+description = "Real-time Intel GPU statistics monitoring via i915/xe PMU"
+repository = "https://github.com/srperens/intel-gpu-stats"
+documentation = "https://docs.rs/intel-gpu-stats"
+readme = "README.md"
+keywords = ["intel", "gpu", "monitoring", "quicksync", "i915"]
+categories = ["hardware-support", "os::linux-apis"]
+rust-version = "1.70"
 
 [dependencies]
 libc = "0.2"
