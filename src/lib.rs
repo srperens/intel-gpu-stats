@@ -6,8 +6,8 @@
 //!
 //! # Platform Support
 //!
-//! - **Linux** (primary): Via i915/xe PMU and `perf_event_open` syscall
-//! - **Windows** (planned): Via D3DKMT API
+//! - **Linux**: Via i915/xe PMU and `perf_event_open` syscall
+//! - **Windows**: Via DXGI enumeration and D3DKMT performance queries
 //!
 //! # Features
 //!
@@ -105,16 +105,15 @@ pub use types::*;
 #[cfg(target_os = "linux")]
 pub use linux::{IntelGpu, SamplingHandle};
 
-// Placeholder for Windows support
 #[cfg(target_os = "windows")]
-compile_error!("Windows support is not yet implemented");
+pub use windows::{IntelGpu, SamplingHandle};
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Check if the current platform is supported
 pub fn is_platform_supported() -> bool {
-    cfg!(target_os = "linux")
+    cfg!(any(target_os = "linux", target_os = "windows"))
 }
 
 /// Get a human-readable description of the current platform support status
@@ -126,7 +125,7 @@ pub fn platform_support_status() -> &'static str {
 
     #[cfg(target_os = "windows")]
     {
-        "Windows: Not yet implemented"
+        "Windows: Supported via D3DKMT API"
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]

@@ -53,6 +53,15 @@ pub enum Error {
     #[error("Failed to read perf event: {0}")]
     PerfEventRead(#[from] io::Error),
 
+    /// Generic I/O error with context
+    #[error("{context}: {source}")]
+    Io {
+        /// Context describing what operation failed
+        context: String,
+        /// The underlying IO error
+        source: io::Error,
+    },
+
     /// Error parsing sysfs data
     #[error("Failed to parse sysfs data at {path}: {message}")]
     SysfsParse {
@@ -110,6 +119,7 @@ impl Error {
     }
 
     /// Create a permission denied error from an IO error
+    #[cfg(target_os = "linux")]
     pub(crate) fn permission_denied(source: &io::Error) -> Self {
         Error::PermissionDenied {
             message: source.to_string(),
@@ -117,6 +127,7 @@ impl Error {
     }
 
     /// Create a sysfs parse error
+    #[cfg(target_os = "linux")]
     pub(crate) fn sysfs_parse(path: impl Into<PathBuf>, message: impl Into<String>) -> Self {
         Error::SysfsParse {
             path: path.into(),
